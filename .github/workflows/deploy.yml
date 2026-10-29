@@ -1,9 +1,13 @@
+
 name: Build, Test and Deploy
 
 on:
   push:
     branches:
       - main
+
+permissions:
+  contents: read
 
 jobs:
   build-test-deploy:
@@ -12,12 +16,6 @@ jobs:
     steps:
       - name: Check out source code
         uses: actions/checkout@v4
-
-      - name: Set image name
-        run: echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/aws-cicd-lab" >> "$GITHUB_ENV"
-
-      - name: Set image tag
-        run: echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -33,6 +31,11 @@ jobs:
       - name: Run automated tests
         run: pytest
 
+      - name: Set image name and tag
+        run: |
+          echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/aws-cicd-lab" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -47,14 +50,30 @@ jobs:
         run: |
           docker push "$IMAGE_NAME:$IMAGE_TAG"
 
-      - name: Deploy to EC2
+      - name: Deploy to Amazon Linux 2023 EC2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
           script: |
-            sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/aws-cicd-lab:${{ github.sha }}
+            set -eu
+
+            IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/aws-cicd-lab"
+            IMAGE_TAG="${{ github.sha }}"
+
+            sudo systemctl enable --now docker
+
+            sudo docker pull "$IMAGE_NAME:$IMAGE_TAG"
+
             sudo docker stop aws-cicd-lab || true
             sudo docker rm aws-cicd-lab || true
-            sudo docker run -d --name aws-cicd-lab --restart unless-stopped
+
+            sudo docker run -d \
+              --name aws-cicd-lab \
+              --restart unless-stopped \
+              -p 80:5000 \
+              "$IMAGE_NAME:$IMAGE_TAG"
+
+            sudo docker ps --filter name=aws-cicd-lab
